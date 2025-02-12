@@ -284,22 +284,4 @@ class TransferService
 
     }
 
-    public function verifyTransferStatusBy()
-    {
-        try {
-            $reference = request()->input('reference');
-            $response = $this->fincraService->verifyTransfer($reference);
-            $transaction_entry = TransactionEntry::where('transaction_reference', $reference)->first();
-
-            $transaction_entry->update([
-                'status' => $response['data']['status'],
-            ]);
-
-            $transaction_entry = TransactionEntry::where('transaction_reference', $reference)->first();
-
-            return ResponseHelper::success($transaction_entry);
-        } catch (Exception $e) {
-            return ResponseHelper::error(error: $e->getMessage());
-        }
-    }
 }

@@ -2,12 +2,18 @@
 
 namespace App\Modules\TransferModule\Services;
 
+use App\Common\Enums\IdentifierType;
 use App\Common\Enums\ServiceProvider;
+use App\Common\Helpers\CodeHelper;
 use App\Common\Helpers\ResponseHelper;
 use App\Exceptions\AppException;
 use App\Models\Account;
+use App\Models\TransactionEntry;
+use App\Models\User;
 use App\Modules\FincraModule\Services\FincraService;
 use App\Modules\PaystackModule\Services\PaystackService;
+use Exception;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class TransferResourcesService
@@ -97,6 +103,77 @@ class TransferResourcesService
         } catch (AppException $e) {
 
             return ResponseHelper::unprocessableEntity($e->getMessage());
+        }
+    }
+
+    public function resolveAccountByIdentity(Request $request): JsonResponse
+    {
+        try {
+            $identity = $request->get("identity");
+            $identityType = CodeHelper::getIdentifyType($identity);
+
+            $account = match ($identityType) {
+                IdentifierType::Email => Account::firstWhere('email', $identity),
+                IdentifierType::Tag => Account::firstWhere('tag', $identity),
+                IdentifierType::Phone => Account::firstWhere('phone_number', $identity),
+                IdentifierType::AccountNumber => Account::firstWhere('account_number', $identity),
+                default => throw new AppException("Invalid resolve identity."),
+            };
+
+            if (!$account) {
+                throw new AppException("Account Not Found");
+            }
+
+            $response = [
+                'accountName' => $account->validated_name,
+                'accountNumber' => $account->account_number,
+                'accountId' => $account->account_id,
+                'identified_by' => $identityType
+            ];
+
+            return ResponseHelper::success($response);
+        } catch (AppException $e) {
+            return ResponseHelper::error($e->getMessage(), data: [
+                'identified_by' => $identityType
+            ]);
+        } catch (Exception $e) {
+            return ResponseHelper::unprocessableEntity("Unable to resolve account.");
+        }
+    }
+
+
+
+    public function verifyTransferStatusBy($account_id)
+    {
+        try {
+            $user = auth()->user();
+            $reference = request()->input('reference');
+
+            if (!$account_id || !$reference) {
+                throw new AppException("Account Id and Reference are required");
+            }
+
+            $account = Account::where("user_id", $user->id)->where("account_id", $account_id)->firstOrFail();
+            $accountType = ServiceProvider::tryFrom($account->service_provider) ?? throw new AppException("Invalid Account Type");
+
+            $transaction_entry = TransactionEntry::where('transaction_reference', $reference)->first();
+            $status = $transaction_entry->status ?? 'pending';
+
+            if ($transaction_entry->to_sys_account_id && $transaction_entry->from_sys_account_id) {
+                $status = 'successfull';
+            } else {
+                $status = match ($accountType) {
+                    ServiceProvider::FINCRA => $this->fincraService->verifyTransfer($reference)['data']['status'],
+                    ServiceProvider::PAYSTACK => $this->paystackService->verifyTransfer($reference)['data']['status'],
+                    default => throw new AppException("Invalid account service provider."),
+                };
+            }
+
+            $transaction_entry->update(['status' => $status]);
+
+            return ResponseHelper::success($transaction_entry, "Transaction status verification successful.");
+        } catch (Exception $e) {
+            return ResponseHelper::error($e->getMessage());
         }
     }
 
